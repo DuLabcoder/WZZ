@@ -1,0 +1,161 @@
+import os
+from os import listdir
+import cv2
+import numpy as np
+from numpy import asarray
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras.models import Model, model_from_json, Sequential
+from tensorflow.keras.optimizers import Adam,SGD,RMSprop
+from tensorflow.keras.models import load_model
+from tensorflow.keras import backend as K
+from tensorflow.keras.utils import to_categorical
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score
+from sklearn.metrics import confusion_matrix,  roc_curve, auc
+import glob
+import json
+np.random.seed(7)
+tf.compat.v1.disable_eager_execution()
+
+# define location of dataset
+folder_1 = '/mesenchymal/soft/'
+folder_2 = '/mesenchymal/stiff/'
+photos, labels = list(), list()
+# plot first few images
+for file in listdir(folder_1):
+    output = 0.0
+    photo = cv2.imread(folder_1 + file)
+    photo = cv2.resize(photo, (50,50))
+    photos.append(photo)
+    labels.append(output)
+for file in listdir(folder_2):
+    output = 1.0
+    photo = cv2.imread(folder_2 + file)
+    photo = cv2.resize(photo, (50,50))
+    photos.append(photo)
+    labels.append(output)
+photos = asarray(photos)
+labels = asarray(labels)
+print(photos.shape, labels.shape)
+
+#dataset preprocess
+train_x = photos
+train_x = (train_x/255.0 - 0.5)*2
+train_y = to_categorical(labels, num_classes=2)
+#shuffle datasets
+index = np.arange(120336)
+np.random.shuffle(index)
+train_x = train_x[index,:,:,:]
+train_y = train_y[index]
+X_train, X_test, Y_train, Y_test = train_test_split(train_x, train_y, test_size = 0.2, random_state=0)
+
+#model setup
+filtersize=(3,3)
+model = tf.keras.Sequential()
+model.add(tf.keras.layers.Conv2D(4, filtersize, strides=(1, 1), padding='valid', activation='relu', input_shape = (50,50,3)))
+model.add(tf.keras.layers.MaxPooling2D(pool_size=(2, 2)))
+model.add(tf.keras.layers.Conv2D(4, filtersize, strides=(1, 1), padding='valid', activation='relu'))
+model.add(tf.keras.layers.MaxPooling2D(pool_size=(2, 2)))
+model.add(tf.keras.layers.Flatten())
+model.add(tf.keras.layers.Dense(8, activation='relu'))
+#model.add(tf.keras.layers.Dropout(0.5))
+model.add(tf.keras.layers.Dense(2,activation='softmax'))
+model.summary()
+opt = Adam(lr=1e-5)
+model.compile(optimizer=opt,loss='categorical_crossentropy',metrics=['accuracy'])
+history = model.fit(train_x, train_y, epochs=50, batch_size=128, validation_split=0.33, verbose=1)
+
+#learning curve
+plt.plot(history.history['accuracy'])
+plt.plot(history.history['val_accuracy'])
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('Learning Curve')
+#plt.ylabel('accuracy and loss')
+plt.xlabel('epoch')
+plt.legend(['accuracy', 'validation_accuracy','loss','validation_loss'],bbox_to_anchor=(1.05, 1),loc=2) 
+plt.savefig('Net.pdf',bbox_inches='tight')
+plt.show()
+
+#test
+Y_pred = model.predict(X_test)
+y_pred = np.argmax(Y_pred, axis=1)
+F1_score = f1_score(np.argmax(Y_test,1), y_pred, average='binary')
+Accuracy = accuracy_score(np.argmax(Y_test,1), y_pred)
+Precision = precision_score(np.argmax(Y_test,1), y_pred, average='binary')
+Recall = recall_score(np.argmax(Y_test,1), y_pred, average='binary')
+    
+parameter_dict = {model:[F1_score, Accuracy, Precision, Recall]}
+parameter_dataframe = pd.DataFrame(parameter_dict,index=["F1_score", "Accuracy", "Precision", "Recall"])
+    
+print(parameter_dataframe)
+#parameter_dataframe.to_csv(network_name + "_final_parameter" + ".csv")
+    
+#Confusion matrix
+confusion_m = confusion_matrix(np.argmax(Y_test,1), y_pred)
+confusion_dataframe = pd.DataFrame(confusion_m, index=["Answer:0", "Answer:1"])
+confusion_dataframe.columns = ["Prediction:0", "Prediction:1"]
+print(confusion_dataframe)
+#confusion_dataframe.to_csv(network_name + "_confusion_matrix" + ".csv")
+
+#AUC of ROC curve
+prob = model.predict(X_test)[:,1]
+fpr, tpr, threshold = roc_curve(np.argmax(Y_test,1), prob)
+roc_auc = auc(fpr, tpr)
+print("AUC: {0}".format(roc_auc))
+roc_data = [fpr, tpr]
+roc_dataframe = pd.DataFrame(roc_data, index=["False positive rate", "True positive rate"])
+print(roc_dataframe)
+#roc_dataframe.to_csv(network_name + "_roc_auc" + ".csv")    
+plt.plot(fpr, tpr, color='red',lw= 2, label='ROC curve (area = %0.2f)' % roc_auc)
+plt.plot([0, 1], [0, 1], color='black', lw= 2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver operating characteristic')
+plt.legend(loc="best")   
+plt.savefig('ROC curve.pdf',bbox_inches='tight')
+plt.show()
+
+#Grad_CAM
+#model = load_model("/")
+y = cv2.imread("/mesenchymal/soft/1.tif")
+X = cv2.resize(y,(50,50))
+x = np.expand_dims(X, axis=0)
+preprocessed_input = (x / 255.0 - 0.5) * 2
+
+predictions = model.predict(preprocessed_input)
+class_idx = np.argmax(predictions[0])
+print(predictions)
+class_output = model.output[:, class_idx]
+
+conv_output = model.get_layer("conv2d_1").output   
+#with tf.GradientTape() as gtape:
+#    grads = gtape.gradient(class_output, conv_output)
+grads = K.gradients(class_output, conv_output)[0] 
+tf.compat.v1.disable_eager_execution()
+gradient_function = K.function([model.input], [conv_output, grads])
+output, grads_val = gradient_function([preprocessed_input])
+output, grads_val = output[0], grads_val[0]
+weights = np.mean(grads_val, axis=(0, 1))
+#cam = np.ones(output.shape[0: 1], dtype = np.float32)
+#weights = np.mean(grads_val, axis=(0,1))
+#for i, w in enumerate(weights):
+#    cam += w * output[:, :, i]
+cam = np.dot(output, weights)
+cam = cv2.resize(cam, (50,50), cv2.INTER_LINEAR)
+cam = np.maximum(cam, 0) 
+cam = cam / cam.max()
+heatmap = np.uint8(255*cam)
+heatmap = cv2.applyColorMap(heatmap,cv2.COLORMAP_HOT)
+#superimposed_img = cv2.addWeighted(X,0.6,heatmap,0.4,0)
+#plt.imshow(superimposed_img)
+df = pd.DataFrame(cam)
+sns.heatmap(df, cmap='hot',square=True,xticklabels=False, yticklabels=False,cbar=False, vmax=1, vmin=0,robust = True)
+plt.savefig("1-Grad_CAM.pdf",bbox_inches='tight')
+
+
