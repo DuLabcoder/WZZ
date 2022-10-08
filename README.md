@@ -1,2 +1,2 @@
 # WZZ
-stiffness classification
+image-based stiffness evaluation
